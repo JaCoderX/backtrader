@@ -24,12 +24,7 @@ from __future__ import (absolute_import, division, print_function,
 from backtrader import BrokerBase, Order
 from backtrader.utils.py3 import queue
 from backtrader.stores.ccxtstore import CCXTStore, CCXTOrder
-
-
-class CCXTOrderForMultiBroker(CCXTOrder):
-    def __init__(self, owner, data, ccxt_order, exchange):
-        super(CCXTOrderForMultiBroker, self).__init__(owner, data, ccxt_order)
-        self.exchange = exchange
+from backtrader.feeds.ccxt import CCXT
 
 
 class CCXTMultiBroker(BrokerBase):
@@ -39,6 +34,14 @@ class CCXTMultiBroker(BrokerBase):
     internal API of ``backtrader``.
     '''
 
+    class BrokerAccount:
+        def __init__(self, store, currency):
+            self.store = store
+            self.currency = currency
+            self.cash = 0
+            self.value = 0
+            self.currency_conversion_rate = 1.0  # for the case that exchange currency isn't the same as the main currency
+
     order_types = {Order.Market: 'market',
                    Order.Limit: 'limit',
                    Order.Stop: 'stop',
@@ -46,29 +49,72 @@ class CCXTMultiBroker(BrokerBase):
 
     def __init__(self, main_currency, retries=5):
         super(CCXTMultiBroker, self).__init__()
-        self.stores = dict()
-        self.active_store = None
+        self.brokers = dict()
+        self.total_cash = 0.0
+        self.total_value = 0.0
         self.main_currency = main_currency
         self.notifs = queue.Queue()  # holds orders which are notified (from all exchanges)
         self.retries = retries
 
     def add_exchange(self, exchange, config, currency):
         store = CCXTStore(exchange, config, self.retries)
-        self.stores[exchange] = {'store': store, 'currency': currency}
-        if not self.active_store:
-            self.active_store = store
+        self.brokers[exchange] = self.BrokerAccount(store, currency)
 
-    def switch_exchange(self, exchange):
-        self.active_store = self.store(exchange)
+    def next(self):
+        # update account balance info for the next cycle
+        self.get_cash(cached = False)
+        self.get_value(cached = False)
 
     def store(self, exchange):
-        return self.stores[exchange]['store']
+        return self.brokers[exchange].store
 
-    def getcash(self):
-        return self.active_store.getcash(self.currency)
+    def getcash(self, exchange = None):
+        return self.total_cash if exchange is None else self.brokers[exchange].cash
 
-    def getvalue(self, datas=None):
-        return self.active_store.getvalue(self.currency)
+    def get_cash(self, exchange = None, cached = True):
+        if cached:
+            return self.getcash(exchange)
+
+        if exchange is not None:
+            self.brokers[exchange].cash = self.store(exchange).getcash(self.store(exchange).currency)
+            return self.brokers[exchange].cash
+
+        # default is to aggregate all the cash and update the cache
+        # note: the system is calling the default on every loop prior to the strategy.
+        #       so it is safe to assume that a cache update will be performed at least once per cycle
+        self.total_cash = 0.0
+        for exchange, Account in self.brokers.items():
+            # update the account cash info
+            Account.cash = Account.store.getcash(Account.currency)
+
+            # aggregate all the cash from across all exchanges under one main currency.
+            self.total_cash += Account.cash * Account.currency_conversion_rate
+
+        return self.total_cash
+
+    def getvalue(self, datas = None, exchange = None):
+        return self.total_value if exchange is None else self.brokers[exchange].value
+
+    def get_value(self, datas = None, exchange = None, cached = True):
+        if cached:
+            return self.getvalue(exchange)
+
+        if exchange is not None:
+            self.brokers[exchange].value = self.store(exchange).getvalue(self.store(exchange).currency)
+            return self.brokers[exchange].value
+
+        # default is to aggregate all the value and update the cache
+        # note: the system is calling the default on every loop prior to the strategy.
+        #       so it is safe to assume that a cache update will be performed once per cycle
+        self.total_value = 0.0
+        for exchange, Account in self.brokers.items():
+            # update the account value info
+            Account.value = Account.store.getvalue(Account.currency)
+
+            # aggregate all the value from across all exchanges under one main currency.
+            self.total_value += Account.value * Account.currency_conversion_rate
+
+        return self.total_value
 
     def get_notification(self):
         try:
@@ -80,22 +126,23 @@ class CCXTMultiBroker(BrokerBase):
         self.notifs.put(order)
 
     def getposition(self, data):
-        currency = data.symbol.split('/')[0]
-        return self.active_store.getposition(currency)
+        if isinstance(data, CCXT):
+            exchange = data.store.exchange.name
+            currency = data.symbol.split('/')[0]
+            return self.store(exchange).getposition(currency)
 
     def _submit(self, owner, data, exectype, side, amount, price, params):
-        # 'exchange' is a special kwargs (not part of ccxt create_orders params) that can be paste in buy/sell actions
-        # to allow backtrader to switch between ccxt exchanges and save action history without breaking functionality.
-        # this is made possible cause a reference to exchange can be saved as part of the order records
-        # for later reference, for example in notification or cancel order.
-        exchange = params.pop('exchange', self.active_store.exchange.name)
+        # This is where the magic happens.
+        # All data that are of type CCXT data feed will have the access to the exchange that belong to them
+        if isinstance(data, CCXT):
+            exchange = data.store.exchange.name
 
-        order_type = self.order_types.get(exectype)
-        ccxt_order = self.store(exchange).create_order(symbol=data.symbol, order_type=order_type, side=side,
-                                        amount=amount, price=price, params=params)
-        order = CCXTOrderForMultiBroker(owner, data, ccxt_order, exchange)
-        self.notify(order)
-        return order
+            order_type = self.order_types.get(exectype)
+            ccxt_order = self.store(exchange).create_order(symbol=data.symbol, order_type=order_type, side=side,
+                                                           amount=amount, price=price, params=params)
+            order = CCXTOrder(owner, data, ccxt_order)
+            self.notify(order)
+            return order
 
     def buy(self, owner, data, size, price=None, plimit=None,
             exectype=None, valid=None, tradeid=0, oco=None,
@@ -110,7 +157,8 @@ class CCXTMultiBroker(BrokerBase):
         return self._submit(owner, data, exectype, 'sell', size, price, kwargs)
 
     def cancel(self, order):
-        return self.store(order.exchange).cancel_order(order)
+        exchange = order.data.store.exchange.name
+        return self.store(exchange).cancel_order(order)
 
     def get_orders_open(self, exchange):
         return self.store(exchange).fetch_open_orders()
