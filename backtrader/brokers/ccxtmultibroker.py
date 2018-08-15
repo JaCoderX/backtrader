@@ -105,7 +105,7 @@ class CCXTMultiBroker(BrokerBase):
 
         # default is to aggregate all the value and update the cache
         # note: the system is calling the default on every loop prior to the strategy.
-        #       so it is safe to assume that a cache update will be performed once per cycle
+        #       so it is safe to assume that a cache update will be performed at least once per cycle
         self.total_value = 0.0
         for exchange, Account in self.brokers.items():
             # update the account value info

@@ -45,3 +45,8 @@ try:
     from .ccxtbroker import CCXTBroker
 except ImportError as e:
     pass  # The user may not have something installed
+    
+try:
+    from .ccxtmultibroker import CCXTMultiBroker
+except ImportError as e:
+    pass  # The user may not have something installed    
