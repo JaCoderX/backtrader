@@ -56,8 +56,9 @@ class CCXTMultiBroker(BrokerBase):
         self.notifs = queue.Queue()  # holds orders which are notified (from all exchanges)
         self.retries = retries
 
-    def add_exchange(self, exchange, config, currency):
+    def add_exchange(self, exchange: str, config, currency):
         store = CCXTStore(exchange, config, self.retries)
+        exchange = exchange.lower()
         self.brokers[exchange] = self.BrokerAccount(store, currency)
 
     def next(self):
@@ -65,19 +66,22 @@ class CCXTMultiBroker(BrokerBase):
         self.get_cash(cached = False)
         self.get_value(cached = False)
 
+    def broker(self, exchange: str):
+        return self.brokers[exchange.lower()]
+
     def store(self, exchange):
-        return self.brokers[exchange].store
+        return self.broker(exchange).store
 
     def getcash(self, exchange = None):
-        return self.total_cash if exchange is None else self.brokers[exchange].cash
+        return self.total_cash if exchange is None else self.broker(exchange).cash
 
     def get_cash(self, exchange = None, cached = True):
         if cached:
             return self.getcash(exchange)
 
         if exchange is not None:
-            self.brokers[exchange].cash = self.store(exchange).getcash(self.store(exchange).currency)
-            return self.brokers[exchange].cash
+            self.broker(exchange).cash = self.store(exchange).getcash(self.store(exchange).currency)
+            return self.broker(exchange).cash
 
         # default is to aggregate all the cash and update the cache
         # note: the system is calling the default on every loop prior to the strategy.
@@ -93,15 +97,15 @@ class CCXTMultiBroker(BrokerBase):
         return self.total_cash
 
     def getvalue(self, datas = None, exchange = None):
-        return self.total_value if exchange is None else self.brokers[exchange].value
+        return self.total_value if exchange is None else self.broker(exchange).value
 
     def get_value(self, datas = None, exchange = None, cached = True):
         if cached:
             return self.getvalue(exchange)
 
         if exchange is not None:
-            self.brokers[exchange].value = self.store(exchange).getvalue(self.store(exchange).currency)
-            return self.brokers[exchange].value
+            self.broker(exchange).value = self.store(exchange).getvalue(self.store(exchange).currency)
+            return self.broker(exchange).value
 
         # default is to aggregate all the value and update the cache
         # note: the system is calling the default on every loop prior to the strategy.
