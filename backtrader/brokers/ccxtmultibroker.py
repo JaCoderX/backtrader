@@ -35,12 +35,12 @@ class CCXTMultiBroker(BrokerBase):
     '''
 
     class BrokerAccount:
-        def __init__(self, store, currency):
+        def __init__(self, store, currency, rate):
             self.store = store
             self.currency = currency
             self.cash = 0
             self.value = 0
-            self.currency_conversion_rate = 1.0  # for the case that exchange currency isn't the same as the main currency
+            self.currency_conversion_rate = rate  # for the case that exchange currency isn't the same as the main currency
 
     order_types = {Order.Market: 'market',
                    Order.Limit: 'limit',
@@ -56,10 +56,10 @@ class CCXTMultiBroker(BrokerBase):
         self.notifs = queue.Queue()  # holds orders which are notified (from all exchanges)
         self.retries = retries
 
-    def add_exchange(self, exchange: str, config, currency):
+    def add_exchange(self, exchange: str, config, currency, rate = 1.0):
         store = CCXTStore(exchange, config, self.retries)
         exchange = exchange.lower()
-        self.brokers[exchange] = self.BrokerAccount(store, currency)
+        self.brokers[exchange] = self.BrokerAccount(store, currency, rate)
 
     def next(self):
         # update account balance info for the next cycle
